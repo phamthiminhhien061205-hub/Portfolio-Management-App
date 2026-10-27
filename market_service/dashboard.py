@@ -195,3 +195,265 @@ m3.metric('CAPM Expected Return', f"{capm['capm_expected_return'] * 100:.2f}%")
 st.write(f"Tín hiệu Momentum: **{momentum['signal']}**")
 st.caption('CAPM sử dụng lãi suất phi rủi ro nhập ở thanh bên trái và lợi suất thị trường lịch sử quy đổi năm. Đây là ước lượng mô hình, không phải cam kết lợi nhuận.')
 st.caption('Dữ liệu Yahoo Finance có thể chậm hoặc thay đổi. Dashboard này phục vụ học tập và demo, không phải khuyến nghị đầu tư.')
+
+
+st.subheader("5. Rolling Beta – Biến động Beta theo thời gian")
+
+rolling_ticker = st.selectbox(
+    "Chọn cổ phiếu để xem Rolling Beta",
+    list(weights.keys()),
+    key="rolling_ticker"
+)
+
+rolling_window = st.selectbox(
+    "Cửa sổ tính Beta",
+    [30, 60, 90, 120],
+    index=1
+)
+
+try:
+    rolling = api_get(
+        f"/market/rolling-beta/{rolling_ticker}",
+        {
+            "benchmark": benchmark,
+            "period": period,
+            "window": rolling_window
+        }
+    )
+
+    df_beta = pd.DataFrame(rolling["data"])
+
+    if not df_beta.empty:
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=df_beta["date"],
+            y=df_beta["beta"],
+            mode="lines",
+            name=f"Rolling Beta {rolling_ticker}"
+        ))
+
+        fig.add_hline(
+            y=1,
+            line_dash="dash",
+            annotation_text="Beta = 1"
+        )
+
+        fig.update_layout(
+            title=f"Rolling Beta {rolling_window} phiên",
+            xaxis_title="Ngày",
+            yaxis_title="Beta",
+            height=450
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.info(
+            "Rolling Beta cho biết mức độ nhạy cảm "
+            "với thị trường thay đổi theo thời gian."
+        )
+    else:
+        st.warning("Không đủ dữ liệu để hiển thị Rolling Beta.")
+
+except requests.RequestException as exc:
+    request_error(exc)
+
+
+# =====================================================
+# 6. HISTORICAL MARKET REGIME
+# =====================================================
+st.header("6. Historical Market Regime")
+st.caption("Phân tích Bull / Bear / Sideways và lợi suất danh mục theo trạng thái thị trường.")
+
+# Dùng chính tỷ trọng, benchmark và giai đoạn được chọn trong sidebar.
+# Chỉ hiển thị dữ liệu đã phân tích cho đúng bộ tham số hiện tại.
+historical_payload = {"weights": weights, "benchmark": benchmark, "period": period}
+if st.button("📊 Analyze Historical Regime", key="analyze_historical"):
+    try:
+        with st.spinner("Đang phân tích dữ liệu thị trường..."):
+            result = api_post("/market/historical-regime", historical_payload)
+        st.session_state["historical_regime"] = result
+        st.session_state["historical_regime_params"] = historical_payload
+    except requests.RequestException as exc:
+        request_error(exc)
+
+if "historical_regime" in st.session_state:
+    if st.session_state.get("historical_regime_params") != historical_payload:
+        st.warning("Bạn đã thay đổi tỷ trọng, benchmark hoặc giai đoạn. Nhấn Analyze Historical Regime để cập nhật phần 6.")
+    else:
+        result = st.session_state["historical_regime"]
+        history = pd.DataFrame(result.get("history", []))
+        summary = pd.DataFrame(result.get("summary", []))
+        required_history = {"date", "close", "sma50", "sma200", "regime"}
+        required_summary = {"regime", "avg_portfolio_return_pct", "avg_benchmark_return_pct"}
+        if history.empty or summary.empty or not required_history.issubset(history.columns) or not required_summary.issubset(summary.columns):
+            st.warning("API không trả về đủ dữ liệu lịch sử hoặc thống kê để hiển thị.")
+        else:
+            history["date"] = pd.to_datetime(history["date"], errors="coerce")
+            history = history.dropna(subset=["date"]).sort_values("date")
+            for field in ["avg_portfolio_return_pct", "avg_benchmark_return_pct"]:
+                summary[field] = pd.to_numeric(summary[field], errors="coerce")
+            st.metric("Current Market Regime", result.get("current_regime", "N/A"))
+            st.subheader("6.1. Historical Bull / Bear / Sideways")
+            fig = go.Figure()
+            colors = {"Bull": "rgba(0,180,90,0.18)", "Bear": "rgba(230,60,60,0.18)", "Sideways": "rgba(140,140,140,0.15)"}
+            groups = history["regime"].ne(history["regime"].shift()).cumsum()
+            for _, segment in history.groupby(groups):
+                fig.add_vrect(x0=segment["date"].iloc[0], x1=segment["date"].iloc[-1],
+                              fillcolor=colors.get(segment["regime"].iloc[0], colors["Sideways"]),
+                              line_width=0, layer="below")
+            for column, name, color in [("close", f"{benchmark} Close", "#2684ff"),
+                                        ("sma50", "SMA50", "orange"), ("sma200", "SMA200", "red")]:
+                fig.add_trace(go.Scatter(x=history["date"], y=history[column], name=name,
+                                         mode="lines", line=dict(color=color, width=2)))
+            fig.update_layout(title=f"{benchmark} Historical Market Regime", xaxis_title="Ngày",
+                              yaxis_title="Giá", height=480, hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Vùng xanh: Bull; đỏ: Bear; xám: Sideways. Các trạng thái được phân loại theo quy tắc của API.")
+
+            st.subheader("6.2. Thống kê trạng thái thị trường")
+            st.dataframe(summary, use_container_width=True, hide_index=True)
+
+            st.subheader("6.3. So sánh lợi suất trung bình mỗi phiên")
+            fig_perf = go.Figure()
+            for field, name, color in [("avg_portfolio_return_pct", "Danh mục", "#2684ff"),
+                                       ("avg_benchmark_return_pct", benchmark, "#f59e0b")]:
+                fig_perf.add_trace(go.Bar(x=summary["regime"], y=summary[field], name=name,
+                                          marker_color=color,
+                                          text=summary[field].map(lambda v: f"{v:+.3f}%" if pd.notna(v) else "N/A"),
+                                          textposition="outside"))
+            fig_perf.update_layout(barmode="group", yaxis_title="Lợi suất trung bình mỗi phiên (%)",
+                                   xaxis_title="Trạng thái thị trường", height=430)
+            st.plotly_chart(fig_perf, use_container_width=True)
+
+            st.subheader("6.4. Nhận xét tự động theo trạng thái")
+            for _, item in summary.iterrows():
+                p_ret = item["avg_portfolio_return_pct"]
+                b_ret = item["avg_benchmark_return_pct"]
+                if pd.isna(p_ret) or pd.isna(b_ret):
+                    continue
+                difference = p_ret - b_ret
+                verdict = "vượt" if difference > 0 else "kém" if difference < 0 else "ngang bằng"
+                st.write(f"**{item['regime']}:** Danh mục {p_ret:+.3f}%/phiên; "
+                         f"{benchmark} {b_ret:+.3f}%/phiên. Danh mục {verdict} benchmark "
+                         f"{abs(difference):.3f} điểm phần trăm/phiên.")
+            st.caption("Đây là lợi suất trung bình theo phiên trong dữ liệu lịch sử, không phải lợi suất tích lũy hay dự báo. "
+                       "Kết quả có thể chịu ảnh hưởng của số phiên trong từng trạng thái và giả định tái cân bằng của API.")
+
+
+# =====================================================
+# 7. REGIME SWITCHING STRATEGY BACKTEST
+# =====================================================
+
+st.header("7. Regime Switching Strategy & Backtest")
+
+st.caption(
+    "Điều chỉnh tỷ trọng cổ phiếu theo tín hiệu "
+    "thị trường phiên trước; phần còn lại giữ tiền mặt (0% lãi)."
+)
+
+with st.expander("Thiết lập chiến lược", expanded=True):
+    x1, x2, x3, x4 = st.columns(4)
+
+    bull_exp = x1.slider(
+        "Bull: tỷ trọng cổ phiếu (%)", 0, 100, 100, 5
+    )
+    bear_exp = x2.slider(
+        "Bear: tỷ trọng cổ phiếu (%)", 0, 100, 25, 5
+    )
+    side_exp = x3.slider(
+        "Sideways: tỷ trọng cổ phiếu (%)", 0, 100, 60, 5
+    )
+    trading_cost = x4.number_input(
+        "Phí thay đổi tỷ trọng (bps)",
+        0.0, 100.0, 5.0, 1.0
+    )
+
+strategy_payload = {
+    **payload,
+    "bull_exposure": bull_exp / 100,
+    "bear_exposure": bear_exp / 100,
+    "sideways_exposure": side_exp / 100,
+    "cost_bps": trading_cost
+}
+
+if st.button("▶ Run Regime Backtest"):
+    try:
+        with st.spinner("Đang chạy backtest..."):
+            strategy_result = api_post(
+                "/market/regime-backtest",
+                strategy_payload
+            )
+
+        st.session_state["strategy_result"] = strategy_result
+        st.session_state["strategy_params"] = strategy_payload
+
+    except requests.RequestException as exc:
+        request_error(exc)
+
+if "strategy_result" in st.session_state:
+    if st.session_state.get("strategy_params") != strategy_payload:
+        st.warning(
+            "Thông số đã thay đổi. "
+            "Nhấn Run Regime Backtest để cập nhật."
+        )
+    else:
+        backtest = st.session_state["strategy_result"]
+        curve = pd.DataFrame(backtest["history"])
+        curve["date"] = pd.to_datetime(curve["date"])
+
+        fig = go.Figure()
+
+        for field, label in [
+            ("base_equity", "Danh mục gốc"),
+            ("strategy_equity", "Regime Switching"),
+            ("benchmark_equity", benchmark)
+        ]:
+            fig.add_trace(
+                go.Scatter(
+                    x=curve["date"],
+                    y=curve[field],
+                    name=label,
+                    mode="lines"
+                )
+            )
+
+        fig.update_layout(
+            title="Tăng trưởng 1 đơn vị vốn đầu tư",
+            xaxis_title="Ngày",
+            yaxis_title="Giá trị tích lũy",
+            hovermode="x unified",
+            height=440
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        metric_rows = []
+
+        for key, name in [
+            ("base", "Danh mục gốc"),
+            ("strategy", "Regime Switching"),
+            ("benchmark", benchmark)
+        ]:
+            metric_rows.append({
+                "Chiến lược": name,
+                **backtest["metrics"][key]
+            })
+
+        st.dataframe(
+            pd.DataFrame(metric_rows).rename(columns={
+                "total_return_pct": "Lợi suất tích lũy (%)",
+                "annualized_volatility_pct": "Biến động năm (%)",
+                "max_drawdown_pct": "Max Drawdown (%)"
+            }),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        st.caption(backtest["assumptions"])
+
+        st.info(
+            "Backtest minh họa, không phải dự báo. "
+            "Phí chỉ tính trên thay đổi tỷ trọng cổ phiếu; "
+            "chưa mô phỏng đầy đủ giao dịch và thuế."
+        )

@@ -1,5 +1,9 @@
 from fastapi import FastAPI, HTTPException
 import yfinance as yf
+from market_service.exposure_functions import calculate_rolling_beta
+
+from pydantic import BaseModel, Field
+from market_service.exposure_functions import historical_market_regime
 
 from pydantic import BaseModel, Field
 from typing import Dict
@@ -198,3 +202,73 @@ def get_portfolio_exposure(request: PortfolioRequest):
         )
     except Exception as e:
         handle_exposure_error(e)
+
+
+@app.get("/market/rolling-beta/{ticker}")
+def get_rolling_beta(
+    ticker: str,
+    benchmark: str = "SPY",
+    period: str = "2y",
+    window: int = 60
+):
+    try:
+        return calculate_rolling_beta(
+            ticker=ticker,
+            benchmark=benchmark,
+            period=period,
+            window=window
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class HistoricalRegimeRequest(BaseModel):
+    weights: dict[str, float]
+    benchmark: str = "SPY"
+    period: str = "2y"
+
+
+@app.post("/market/historical-regime")
+def get_historical_regime(payload: HistoricalRegimeRequest):
+    try:
+        return historical_market_regime(
+            weights=payload.weights,
+            benchmark=payload.benchmark,
+            period=payload.period
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# =====================================================
+# 7. REGIME SWITCHING STRATEGY BACKTEST
+# =====================================================
+
+from market_service.regime_strategy import backtest_regime_strategy
+
+
+class RegimeBacktestRequest(BaseModel):
+    weights: Dict[str, float]
+    benchmark: str = "SPY"
+    period: str = "2y"
+    bull_exposure: float = Field(default=1.0, ge=0, le=1)
+    bear_exposure: float = Field(default=0.25, ge=0, le=1)
+    sideways_exposure: float = Field(default=0.6, ge=0, le=1)
+    cost_bps: float = Field(default=5.0, ge=0)
+
+
+@app.post("/market/regime-backtest")
+def regime_backtest(payload: RegimeBacktestRequest):
+    try:
+        return backtest_regime_strategy(**payload.model_dump())
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc)
+        )
+
+    except Exception as exc:
+        handle_exposure_error(exc)
