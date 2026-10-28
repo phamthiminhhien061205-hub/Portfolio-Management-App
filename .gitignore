@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.venv-test/
+
+market_service/dashboard_backup.py
