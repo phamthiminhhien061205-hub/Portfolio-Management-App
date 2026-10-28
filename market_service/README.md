@@ -184,6 +184,8 @@ market_service/
 ├── market_functions.py
 ├── exposure_functions.py
 ├── regime_strategy.py
+├── factor_functions.py
+├── test_market_service.py
 ├── dashboard.py
 ├── db.py
 ├── Dockerfile
@@ -197,6 +199,8 @@ market_service/
 - `market_functions.py`: Core market analytics functions.
 - `exposure_functions.py`: Portfolio exposure, regime analysis, and risk calculations.
 - `regime_strategy.py`: Regime Switching Strategy and historical backtesting.
+- `factor_functions.py`: Factor betas (SPY/QQQ/IWM/^VIX), CAPM alpha, Treynor, rolling beta, momentum exposure, RISK ON/OFF.
+- `test_market_service.py`: Offline tests with synthetic data.
 - `dashboard.py`: Interactive Streamlit dashboard.
 - `db.py`: Database-related utilities.
 - `Dockerfile`: Container configuration.
@@ -234,6 +238,7 @@ python -m venv .venv
 
 ```powershell
 pip install -r market_service/requirements.txt
+# (tuỳ chọn) chạy dashboard Streamlit riêng: pip install -r market_service/requirements-dashboard.txt
 ```
 
 ### Step 4: Start the Market Service with Docker
@@ -248,7 +253,7 @@ docker compose up -d --build market-service
 
 Open:
 
-http://localhost:8002/docs
+http://localhost:8003/docs
 
 ### Step 6: Start the Streamlit Dashboard
 
@@ -400,3 +405,53 @@ It applies concepts from:
 The project is intended for educational and research purposes only.
 
 **Disclaimer:** This application does not provide personalized investment advice. All simulations and analyses are subject to data quality, model assumptions, and historical market conditions.
+
+
+## 9. Microservice integration (group project)
+
+- Service folder: `market_service/` (flat layout; run with `uvicorn main:app --port 8003`).
+- Docker: `docker compose up market-service --build` with `build: ./market_service` and port `8003:8003`.
+- The Streamlit `dashboard.py` is an optional development tool; the official UI belongs to `frontend/`.
+
+### Endpoints added for the assignment
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Health check |
+| POST | `/market/factors` | Portfolio factor betas vs SPY/QQQ/IWM/^VIX, CAPM alpha, Treynor, rolling beta (vs SPY), momentum exposure |
+| GET | `/market/risk-regime` | RISK ON/OFF (SPY & QQQ > MA200 and VIX < 20) and BULL/NEUTRAL/BEAR regime score |
+
+Example body for `POST /market/factors`:
+
+```json
+{"weights": {"AAPL": 0.4, "MSFT": 0.3, "NVDA": 0.3}, "period": "2y", "risk_free_rate": 0.0}
+```
+
+Run offline tests: `pip install -r requirements-dev.txt && pytest -q`
+
+### Streamlit UI for the new endpoints (`market_ui.py`)
+
+```powershell
+cd market_service
+pip install -r requirements-dashboard.txt
+streamlit run market_ui.py --server.port 8503
+```
+
+Tabs: Factors (betas, CAPM alpha, Treynor, rolling beta, momentum exposure), Risk Regime (RISK ON/OFF + score),
+Historical Regime, Regime Backtest. Set `MARKET_API_URL` to change the API address (default `http://127.0.0.1:8003`).
+
+### Regime-switching strategy exactly as in the article
+
+`POST /market/regime-strategy` - BULL = Max Sharpe weights (SLSQP, long-only, max weight 0.5), NEUTRAL = equal weight,
+BEAR = cash. Regime = score of trend (MA50>MA200) + momentum (12D) + low volatility (20D vol < 70th percentile) on SPY.
+`lag=1` (default) uses the previous session's regime to avoid look-ahead; `lag=0` reproduces the article's same-day logic.
+Compared against the static user portfolio and SPY. Requires `scipy`.
+
+### Price cache and rolling alpha
+
+- **Yahoo price cache:** `get_close()` keeps each `(ticker, period)` in memory for `MARKET_CACHE_TTL` seconds
+  (default 300; set `0` to disable). `GET /market/cache` shows entries, `DELETE /market/cache` clears them
+  (use it to force fresh data). Only successful downloads are cached. `/market/historical-regime` still calls
+  Yahoo directly and is not cached.
+- **Rolling alpha:** `POST /market/factors` now also returns `rolling_alpha` / `rolling_alpha_latest`
+  = (rolling mean of portfolio return - rolling beta x rolling mean of SPY return) x 252 (annualized), window = `rolling_window`.

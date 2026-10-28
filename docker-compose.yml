@@ -1,9 +1,9 @@
 services:
   market-service:
     build:
-      context: .
-      dockerfile: market_service/Dockerfile
+      context: ./market_service
+      dockerfile: Dockerfile
     container_name: portfolio-market
     ports:
-      - "8002:8001"
+      - "8003:8003"
     restart: unless-stopped

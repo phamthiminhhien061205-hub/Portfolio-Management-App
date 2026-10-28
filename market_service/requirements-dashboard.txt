@@ -1,0 +1,5 @@
+# Chi can khi chay dashboard Streamlit rieng (khong can cho Docker service)
+-r requirements.txt
+streamlit
+plotly
+requests

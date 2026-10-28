@@ -1,12 +1,48 @@
+import os
+import threading
+import time
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+
+# ---- Cache giá Yahoo trong bộ nhớ (TTL) ----------------------------------------------
+# Mỗi lần phân tích gọi nhiều endpoint, cùng một (ticker, period) bị tải lại nhiều lần.
+# Cache giúp nhanh hơn và giảm nguy cơ Yahoo chặn vì gọi quá nhiều.
+# MARKET_CACHE_TTL: số giây giữ cache (mặc định 300 = 5 phút; đặt 0 để tắt).
+CACHE_TTL_SECONDS = float(os.getenv('MARKET_CACHE_TTL', '300'))
+CACHE_MAX_ENTRIES = 256
+_CACHE: dict = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def clear_price_cache() -> int:
+    """Xoá toàn bộ cache, trả về số mục đã xoá."""
+    with _CACHE_LOCK:
+        n = len(_CACHE)
+        _CACHE.clear()
+    return n
+
+
+def cache_info() -> dict:
+    now = time.time()
+    with _CACHE_LOCK:
+        live = sum(1 for ts, _ in _CACHE.values() if now - ts < CACHE_TTL_SECONDS)
+        return {'ttl_seconds': CACHE_TTL_SECONDS, 'entries': len(_CACHE), 'fresh_entries': live,
+                'keys': sorted(f'{t}:{p}' for t, p in _CACHE)}
 
 
 def get_close(ticker: str, period: str = '2y') -> pd.Series:
     ticker = ticker.strip().upper()
     if not ticker:
         raise ValueError('Ticker cannot be empty')
+    key = (ticker, period)
+    if CACHE_TTL_SECONDS > 0:
+        with _CACHE_LOCK:
+            hit = _CACHE.get(key)
+        if hit and time.time() - hit[0] < CACHE_TTL_SECONDS:
+            return hit[1].copy()          # copy: nơi gọi có sửa cũng không làm hỏng cache
     data = yf.download(ticker, period=period, interval='1d', auto_adjust=True,
                        progress=False, multi_level_index=False)
     if data.empty or 'Close' not in data:
@@ -15,6 +51,11 @@ def get_close(ticker: str, period: str = '2y') -> pd.Series:
     if close.empty:
         raise ValueError(f'No valid close prices for {ticker}')
     close.name = ticker
+    if CACHE_TTL_SECONDS > 0:               # chỉ cache khi thành công
+        with _CACHE_LOCK:
+            if len(_CACHE) >= CACHE_MAX_ENTRIES:
+                _CACHE.pop(min(_CACHE, key=lambda k: _CACHE[k][0]))
+            _CACHE[key] = (time.time(), close.copy())
     return close
 
 

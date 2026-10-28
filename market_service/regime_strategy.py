@@ -4,7 +4,7 @@
 import numpy as np
 import pandas as pd
 
-from market_service.exposure_functions import get_close
+from exposure_functions import get_close
 
 
 def backtest_regime_strategy(

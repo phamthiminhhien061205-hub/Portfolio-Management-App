@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title='Market Exposure & Regime', page_icon='📈', layout='wide')
-API = os.getenv('MARKET_API_URL', 'http://127.0.0.1:8002').rstrip('/')
+API = os.getenv('MARKET_API_URL', 'http://127.0.0.1:8003').rstrip('/')
 
 @st.cache_data(ttl=300, show_spinner=False)
 def api_get(path, params=None):
